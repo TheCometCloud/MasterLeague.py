@@ -1,6 +1,7 @@
-import requests
+import aiohttp
 import time
 import datetime
+from json import loads as jsonify
 
 ROOT_URL = 'https://api.masterleague.net'
 HEROES_URL = '/heroes.json'
@@ -22,19 +23,27 @@ Value: a tuple of type (dict, float)
 """
 
 
-def cache_or_load(url):
-	if url not in cache or time.time() - cache[url][1] > 3600:
-		json = requests.get(url=url).json()
-		cache[url] = (json, time.time())
-		return json
+async def fetch(session, url):
+	async with session.get(url) as response:
+		return await response.text()
+
+
+async def cache_or_load(url):
+		if url not in cache or time.time() - cache[url][1] > 3600:
+			async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
+				string = await fetch(session, url=url)
+				json = jsonify(string)
+				cache[url] = (json, time.time())
+				print(json)
+				return json
 		
-	else:
-		return cache[url][0]
+		else:
+			return cache[url][0]
 
 
-def search_json(url, field, query=None, get_all=False):
+async def search_json(url, field, query=None, get_all=False):
 	results = []
-	json = cache_or_load(url)
+	json = await cache_or_load(url)
 
 	while True:
 		for i in json['results']:
@@ -50,45 +59,53 @@ def search_json(url, field, query=None, get_all=False):
 		if not json['next']:
 			break
 		
-		json = cache_or_load(json['next'])
+		json = await cache_or_load(json['next'])
 	
 	return results
 
 
-def get_all_heroes():
-	heroes = search_json(url=ROOT_URL + HEROES_URL, field='name', get_all=True)
+async def get_all_heroes():
+	heroes = await search_json(url=ROOT_URL + HEROES_URL, field='name', get_all=True)
 	return heroes
 
 
-def get_todays_matches():
+async def get_todays_matches():
 	groups = []
 	matches = []
-	json = cache_or_load(ROOT_URL + CALENDAR_URL)
+	json = await cache_or_load(ROOT_URL + CALENDAR_URL)
 	
 	while True:
-		for i in json['results']:
-			if str(datetime.datetime.today()).split(' ')[0] in i['date']:
-				groups.append(i)
-		
+		if json['results']:
+			for i in json['results']:
+				if str(datetime.datetime.today()).split(' ')[0] in i['date']:
+					groups.append(i)
+			
 		if not json['next']:
 			break
 		
-		json = cache_or_load(json['next'])
+		json = await cache_or_load(json['next'])
 	
 	while True:
 		for i in groups:
 			for j in i['matches']:
-				match = Match(j)
+				# TODO: Rework asynchronous instantiation of these classes
+				# More work needs to be done inside the constructor, and less work outside of it.
+				left = await search_json(url=ROOT_URL + TEAMS_URL, field='id', query=j['left_team'])
+				left = left[0]
+				right = await search_json(url=ROOT_URL + TEAMS_URL, field='id', query=j['right_team'])
+				right = right[0]
+				match = Match({'left_team': left, 'right_team': right, 'format': j['format'], 'name': j['name'], 'datetime': j['datetime']})
 				matches.append(match)
 			
 		break
+	
+	return matches
 
 
 class Team:
-	def __init__(self, id):
-		url = ROOT_URL + TEAMS_URL
+	def __init__(self, data):
 		try:
-			team_data = search_json(url=url, field='id', query=id)[0]
+			team_data = data
 			self.name = team_data['name']
 			self.id = team_data['id']
 			self.logo = team_data['logo']
@@ -106,6 +123,3 @@ class Match:
 		self.format = data['format']
 		self.when = data['datetime']
 		self.name = data['name']
-
-
-get_todays_matches()
